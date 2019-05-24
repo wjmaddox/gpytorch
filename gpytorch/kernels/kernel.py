@@ -21,39 +21,58 @@ class Distance(torch.nn.Module):
         super().__init__()
         self._postprocess = postprocess_script
 
+    def _tc_pad(self, x):
+        # Pad features of x to be multiples of 8 (we get 2 dimensions
+        # from the norm and ones padding later) to use tensor cores
+        n_feats = x.size(-1) + 2
+        if n_feats % 8 == 0:
+            return x
+        pad = (0, 8 - (n_feats % 8))
+        x = torch.nn.functional.pad(x, pad)
+        return x
+
     def _sq_dist(self, x1, x2, postprocess, x1_eq_x2=False):
         if hasattr(torch, 'cdist') and x1.dim() < 3 and x1.size(-2) <= 512 and x2.size(-2) <= 512:
             # torch cdist doesn't support batch, also only available after pytorch 1.1
             # cdist is a bit faster on small tensors. Check again after pytorch PR #20605
-            res = torch.cdist(x1, x2).pow(2)
-        else:
+            return torch.cdist(x1, x2).pow(2)
         # Compute squared distance matrix using quadratic expansion
-            x1_norm = x1.pow(2).sum(dim=-1, keepdim=True)
-            x1_pad = torch.ones_like(x1_norm)
-            if x1_eq_x2:
-                x2_norm, x2_pad = x1_norm, x1_pad
-            else:
-                x2_norm = x2.pow(2).sum(dim=-1, keepdim=True)
-                x2_pad = torch.ones_like(x2_norm)
-            x1_ = torch.cat([-2. * x1, x1_norm, x1_pad], dim=-1)
-            x2_ = torch.cat([x2, x2_pad, x2_norm], dim=-1)
-            res = x1_.matmul(x2_.transpose(-2, -1))
+        use_fp16_kernel = settings.use_fp16_kernel.on()
+        if use_fp16_kernel:
+            if (x1.size(-2)) % 8 != 0:
+                print(f"x1 contains {x1.size(-2)} datapoints which is not a multiple of 8 to use tensor cores")
+            x1 = self._tc_pad(x1.half())
+        x1_norm = x1.pow(2).sum(dim=-1, keepdim=True)
+        x1_pad = torch.ones_like(x1_norm)
+        if x1_eq_x2:
+            x2, x2_norm, x2_pad = x1, x1_norm, x1_pad
+        else:
+            if use_fp16_kernel:
+                if (x2.size(-2)) % 8 != 0:
+                    print(f"x2 contains {x2.size(-2)} datapoints which is not a multiple of 8 to use tensor cores")
+                x2 = self._tc_pad(x2.half())
+            x2_norm = x2.pow(2).sum(dim=-1, keepdim=True)
+            x2_pad = torch.ones_like(x2_norm)
+        x1_ = torch.cat([-2. * x1, x1_norm, x1_pad], dim=-1)
+        x2_ = torch.cat([x2, x2_pad, x2_norm], dim=-1)
+        res = x1_.matmul(x2_.transpose(-2, -1))
+        if use_fp16_kernel:
+            res = res.float()
 
-            if x1_eq_x2:
-                res.diagonal(dim1=-2, dim2=-1).fill_(0)
+        if x1_eq_x2:
+            res.diagonal(dim1=-2, dim2=-1).fill_(0)
 
-            # Zero out negative values
-            res.clamp_min_(0)
+        # Zero out negative values
+        res.clamp_min_(0)
         return self._postprocess(res) if postprocess else res
 
     def _dist(self, x1, x2, postprocess, x1_eq_x2=False):
         if hasattr(torch, 'cdist') and x1.dim() < 3 and x1.size(-2) <= 512 and x2.size(-2) <= 512:
             # torch cdist doesn't support batch, also only available after pytorch 1.1
             # cdist is a bit faster on small tensors. Check again after pytorch PR #20605
-            res = torch.cdist(x1, x2)
-        else:
-            res = self._sq_dist(x1, x2, postprocess=False, x1_eq_x2=x1_eq_x2)
-            res = res.clamp_min_(1e-30).sqrt_()
+            return torch.cdist(x1, x2)
+        res = self._sq_dist(x1, x2, postprocess=False, x1_eq_x2=x1_eq_x2)
+        res = res.clamp_min_(1e-30).sqrt_()
         return self._postprocess(res) if postprocess else res
 
 
