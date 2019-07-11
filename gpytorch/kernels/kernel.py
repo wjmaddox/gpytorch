@@ -10,6 +10,7 @@ from ..models.exact_prediction_strategies import DefaultPredictionStrategy, SumP
 from .. import settings
 from ..utils.deprecation import _ClassWithDeprecatedBatchSize, _deprecate_kwarg_with_transform
 from ..constraints import Positive
+from copy import deepcopy
 
 
 def default_postprocess_script(x):
@@ -405,6 +406,31 @@ class Kernel(Module, _ClassWithDeprecatedBatchSize):
     def __setstate__(self, d):
         self.__dict__ = d
 
+    def __getitem__(self, index):
+        if len(self.batch_shape) == 0:
+            return self
+
+        new_kernel = deepcopy(self)
+
+        if new_kernel.has_lengthscale:
+            # Process the index
+            index = index if isinstance(index, tuple) else (index,)
+
+            if len(index) < self.raw_lengthscale.ndimension():
+                # Pad index with full slices
+                index = index + (slice(None, None, None),) * (self.raw_lengthscale.ndimension() - len(index))
+
+            if len(index) < 3 or not (index[-2] == slice(None, None, None) and index[-1] == slice(None, None, None)):
+                print(index, self.batch_shape)
+                raise RuntimeError("Can only index in to a kernel with a call of the form kernel[*batch_index, :, :]")
+
+            batch_index = index[:-2]
+
+            new_kernel.raw_lengthscale.data = new_kernel.raw_lengthscale.__getitem__(batch_index)
+            new_kernel.batch_shape = new_kernel.raw_lengthscale.shape[:-2]
+
+        return new_kernel
+
 
 class AdditiveKernel(Kernel):
     """
@@ -437,6 +463,12 @@ class AdditiveKernel(Kernel):
     def num_outputs_per_input(self, x1, x2):
         return self.kernels[0].num_outputs_per_input(x1, x2)
 
+    def __getitem__(self, index):
+        new_kernel = deepcopy(self)
+        for i, kernel in enumerate(self.kernels):
+            new_kernel.kernels[i] = self.kernels[i].__getitem__(index)
+
+        return new_kernel
 
 class ProductKernel(Kernel):
     """
@@ -479,3 +511,10 @@ class ProductKernel(Kernel):
 
     def num_outputs_per_input(self, x1, x2):
         return self.kernels[0].num_outputs_per_input(x1, x2)
+
+    def __getitem__(self, index):
+        new_kernel = deepcopy(self)
+        for i, kernel in enumerate(self.kernels):
+            new_kernel.kernels[i] = self.kernels[i].__getitem__(index)
+
+        return new_kernel
