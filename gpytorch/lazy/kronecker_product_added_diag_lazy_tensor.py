@@ -48,7 +48,7 @@ class _KroneckerProductLazyLogDet(KroneckerProductLazyTensor):
         self.eig_cache = [torch.symeig(lt.evaluate(), eigenvectors = True) for lt in self.lazy_tensors]
 
     def inv_matmul(self, rhs, jitter=settings.tridiagonal_jitter.value()):
-        Vinv = KroneckerProductLazyTensor(*[DiagLazyTensor(1 / (s[0][:,0].abs()+jitter) ) for s in self.eig_cache])
+        Vinv = KroneckerProductLazyTensor(*[DiagLazyTensor(1 / (s[0].abs()+jitter) ) for s in self.eig_cache])
         Q = KroneckerProductLazyTensor(*[NonLazyTensor(s[1]) for s in self.eig_cache])
 
         # first compute Q^T y
