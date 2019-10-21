@@ -113,13 +113,13 @@ class KroneckerProductPlusDiagLazyTensor(AddedDiagLazyTensor):
         eigs = sub_eigs[0].matmul(sub_eigs[1].t())
         return torch.log(eigs + noise).sum()
 
-    def KronSVD(self):
+    def _kron_svd(self):
         return [lt.evaluate().svd() for lt in self._lazy_tensor.lazy_tensors]
 
     def inv_quad(self, rhs):
         # TODO: check stability of numerics here
 
-        svd_list = self.KronSVD()
+        svd_list = self._kron_svd()
         noise = self._diag_tensor[0,0]
         V = _DiagKroneckerProdLazyTensor(DiagLazyTensor(svd_list[0].S),
                      DiagLazyTensor(svd_list[1].S))
